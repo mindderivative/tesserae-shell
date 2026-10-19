@@ -14,7 +14,7 @@ depends_on: []
 # TRE-REQ-001: Layer surface window
 
 > [!summary]
-> Add a `LayerWindow` type to tre. It is a `Window` whose Wayland role is `zwlr_layer_shell_v1` instead of xdg-toplevel, so it can anchor to screen edges, reserve space, sit on a stacking layer, take a chosen keyboard mode and bind to one output. A companion `PopupWindow` type opens menus and flyouts parented to a layer surface. A small output API lets the shell place one surface per monitor.
+> Add a `LayerWindow` type to tre. It is a `Window` whose Wayland role is `zwlr_layer_shell_v1` instead of xdg-toplevel, so it can anchor to screen edges, reserve space, sit on a stacking layer, take a chosen keyboard mode and bind to one output. A companion `PopupWindow` type opens menus and flyouts parented to a layer surface. A small output API lets the shell place one surface per monitor. An `input_region`, margin animation and margin drag cover non-rectangular shells, slide and fade motion, and movable widgets.
 
 > [!danger] Blocks the shell
 > No bar, panel, dock, OSD or wallpaper can ship without this. Every note under `40 Specifications/Surfaces/` carries `> [!warning] Blocked by [[TRE-REQ-001 Layer Surface Window]]` until tre ships it. Decision record: [[ADR-0001 Shell Surface Strategy]] (Option A, `proposed`).
@@ -52,6 +52,9 @@ Source: [Python API](https://mindderivative.github.io/tre/api/python/), [Custom 
 | Transparency and input | `transparent`, `blur_behind`, `click_through` | Input regions per area |
 | Undocumented keys | `window.set(...)` accepts `x`, `y`, `always_on_top`, `skip_taskbar` but the property tables do not describe them | Whether they work on Wayland |
 | Backend | `engine-platform` owns the `winit` loop, input translation and the AccessKit adapter | Surface creation details; `wgpu` and raw-window-handle use |
+| Shapes | `corner_radius` (number or 4-tuple), path nodes (`data`, `view_box`, fill, stroke), canvas `Painter` (`fill_circle`, `stroke_path`), `clip_children` to the rounded box, `shader`, `shadows`. Canvas hit-testing can follow a circle or path (`set_hit_test_circle`, `set_hit_test_path`). | Concave corners, `clip_path`, masks, blend modes. Whether box hit-testing respects rounded corners. Non-rectangular windows. |
+| Animation | `node.animate(property, to, duration_ms, easing, on_complete)`; easing `"linear"`, cubic bezier or spring; paint properties and, since 0.5.6, layout properties; `animation_end` event; `window.advance(ms)` for tests | Animating window-level properties. What drives the frame clock. Behaviour when frames stop. |
+| Drag | `window_region="drag"` calls winit `drag_window()`; `resize_border` calls `drag_resize_window()` | Anything for surfaces the compositor places |
 
 #needs-verification: confirm the absences in the tre source and `ARCHITECTURE.md`. The Window reference and Layers guide were not read in full.
 
@@ -72,6 +75,7 @@ bar = LayerWindow(
     exclusive_edge=None,              # edge name; needed for corner anchors (compositor protocol v5)
     margin=(0, 0, 0, 0),              # top, right, bottom, left
     keyboard="none",                  # "none" | "on_demand" | "exclusive"
+    input_region=None,                # None | "auto" | [] | [(x, y, w, h), ...]
     output=None,                      # Output | None (compositor picks)
 )
 app.add_window(bar)
@@ -81,9 +85,11 @@ app.add_window(bar)
 
 `LayerWindow` subclasses `Window`. `root`, `create`, `show_layer`, `after`, `every`, `on`, `simulate`, `advance` and `snapshot` behave as they do today, so the existing headless testing story applies unchanged.
 
-Constructor-only: `namespace`, `output`. Live through `set()` (one atomic commit, like today's `set()` semantics): `layer`, `anchor`, `size`, `exclusive_zone`, `exclusive_edge`, `margin`, `keyboard`.
+Constructor-only: `namespace`, `output`. Live through `set()` (one atomic commit, like today's `set()` semantics): `layer`, `anchor`, `size`, `exclusive_zone`, `exclusive_edge`, `margin`, `keyboard`, `input_region`. Margins also animate: see [Animation](#animation).
 
-Window keys with no meaning for a layer surface (`decorations`, `maximized`, `minimized`, `fullscreen`, `resize_border`, `system_menu`, `title`-as-title-bar) raise on `set()` rather than being ignored.
+Window keys with no meaning for a layer surface (`decorations`, `maximized`, `minimized`, `fullscreen`, `resize_border`, `system_menu`, `title`-as-title-bar) raise on `set()` rather than being ignored. A node with `window_region="drag"` on a `LayerWindow` raises when attached: `drag_window()` and `drag_resize_window()` move and resize an xdg-toplevel, and the compositor places a layer surface. Use `"drag_margin"` instead ([Margin drag](#margin-drag)).
+
+`close()` works as on `Window`: it fires `close_requested` (cancellable), then destroys the surface and fires `closed` with reason `"app"`.
 
 ### Validation
 
@@ -151,6 +157,91 @@ menu = PopupWindow(
 
 This part is separable. If the layer surface lands first, ship popups as a second milestone; the bar and OSD do not need them.
 
+**Alternative: a full-screen overlay surface.** tre's own `show_layer` overlays draw above the whole window and may hang off its edges, so a transparent `LayerWindow` on the `overlay` layer, anchored to all four edges with `input_region="auto"`, could host menus with no `PopupWindow`. For: no `xdg_popup` work, and the existing `show_layer` placement, flipping, dismissal and focus scoping apply unchanged. Against: one full-screen surface per output, input-region upkeep as menus open, close and animate, and keyboard interactivity must switch to `on_demand` while a menu is open. Compare in the prototype before committing to `PopupWindow`.
+
+### Input region
+
+`input_region` controls where the compositor delivers pointer and touch input to the surface. Clicks elsewhere reach the window below. The compositor cannot route a click through a transparent pixel after the surface has received it, so the region must be set explicitly.
+
+| Value | Meaning |
+|---|---|
+| `None` | The whole surface (protocol default) |
+| `"auto"` | The union of the shapes of drawn, `hit_testable` nodes. Rounded boxes, circles and canvas hit-test paths contribute their real shape. |
+| `[]` | Nothing. Equivalent to the existing `click_through`. |
+| `[(x, y, w, h), ...]` | Explicit rectangles in surface-local logical pixels |
+
+- Wayland regions are rectangle lists. tre decomposes a non-rectangular shape into scanline rectangles and caps the count. #needs-verification: cost, and compositor limits on region size.
+- `"auto"` updates in the same commit as the buffer it matches.
+- While a node animation runs, `"auto"` uses the union of the start and end shapes, then snaps to the exact region at `animation_end`. Input never lands outside a visible control; a click just inside the old edge of a shrinking shape may still hit.
+- `click_through` stays as an alias for `input_region=[]`.
+
+### Margin drag
+
+Movable desktop widgets anchor to a corner and move by changing `margin`. Python must not sit in the pointer-move loop, so the engine does it:
+
+- A node with `window_region="drag_margin"` starts a drag on primary press, unless the press lands on a focusable node, a node with a `click` listener, or a node holding pointer capture (the same exclusions as `"drag"`).
+- tre updates the margins of the anchored edges by the pointer delta from the press point, clamped to the output, with one double-buffered commit per input frame. An axis anchored to both opposite edges does not move.
+- The surface moves under the pointer, so surface-local deltas stay valid.
+- On release tre fires `moved` with the final `margin`. The shell persists it.
+- Expect one frame of lag between pointer and surface. #needs-verification on KWin.
+
+## Animation
+
+Source: [tre animation guide](https://mindderivative.github.io/tre/guide/animation/), read 2026-10-18.
+
+Node animation runs inside a `LayerWindow` through the same pipeline as in `Window`, so `node.animate(...)`, springs, `on_complete` and `animation_end` work unchanged. The shell differs from an app in one way: some of what it wants to animate (where the bar sits, how big a notification is) is held by the compositor, not by a node.
+
+| Target | Mechanism | Cost |
+|---|---|---|
+| Paint inside the surface: `fill`, `opacity`, `translate_x/y`, `scale`, `rotation_deg`, `corner_radius`, `shadows`, path `data`, `trim_start/end` | `node.animate` (exists) | Paint only. No layout, no protocol traffic. |
+| Layout inside the surface: `width`, `height`, `padding`, `gap`, `x`, `y` | `node.animate` (exists, since 0.5.6) | Relayout up the tree each frame. No protocol traffic. |
+| Surface position: `margin_top`, `margin_right`, `margin_bottom`, `margin_left` | **New:** `layer_window.animate(property, to, duration_ms, easing, on_complete)`, same signature and easing as `Node.animate` | One double-buffered commit per frame. No buffer reallocation. The compositor moves the surface. |
+| Surface size | Not animated. Step change. | Each change is a configure round trip and a new buffer. |
+| `exclusive_zone` | Not animated. Step change. | Each change reflows maximised windows. |
+| Appearing and disappearing | Animate root `opacity` or `translate_*`; close on `animation_end` | Uses existing API. |
+
+`LayerWindow.animate` is limited to margins on purpose. They are the one surface property where per-frame change is cheap and visibly useful (slide-in panels, auto-hide, movable widgets). The animation runs in Rust; Python starts it and receives the completion callback. #needs-verification: whether KWin accepts negative margins, which a slide off the screen edge needs.
+
+### Shell patterns
+
+| Pattern | How |
+|---|---|
+| Auto-hide bar | Hide: animate `translate_y` (or `margin_top` negative) to slide it out, then set `exclusive_zone=0` in `on_complete`. Reveal: set the zone first, then slide in. Windows reflow once, not per frame. |
+| Notification or island that grows | Create the surface at its largest size. Animate the visible node's `width`, `height` and `corner_radius` inside it. `input_region="auto"` follows. Cost: a larger transparent buffer; damage tracking limits what is redrawn. |
+| Close with a fade | Listener on `close_requested` calls `event.cancel()`, animates root `opacity` to 0, and calls `close()` from `animation_end`. |
+| Open with a fade | Create the window with root `opacity=0`, then animate to 1 after the first configure. |
+| Frame ring that thickens | Animate the ring's path `data` or `stroke_width` in the painter surface. Reservers step their `exclusive_zone` once. |
+
+### Requirements
+
+1. **One clock per loop turn, shared by every window.** The frame ring, the bar and a popup animating together read the same timestamp. Wayland cannot commit separate layer surfaces atomically, so up to one frame of skew between surfaces is possible. Document it; do not promise otherwise.
+2. **Progress comes from the clock, not a frame count.** Frame callbacks can stop for an occluded surface or a powered-off output. A stalled surface must not keep the loop awake, and when frames resume, animations jump to the time-correct value. `on_complete` and `animation_end` still fire once the duration has elapsed (`finished=True`), not only after a presented frame. #needs-verification: what the existing loop does today, and which frame callbacks KWin sends to layer surfaces.
+3. **`reduced_motion`** (exists since 0.5.4 as a window key and event) is provided on `LayerWindow` too. tre only reports it; the shell decides what a reduced animation is. #needs-verification: where tre reads it on KDE Plasma, and whether it follows Plasma's animation speed setting.
+4. **Compositor effects.** KWin may apply its own map and unmap effects to layer surfaces. The shell must not rely on either. #needs-verification.
+5. **Headless.** `advance(ms)` also advances margin animations and fires their callbacks, so motion is testable with no compositor.
+6. **Input region follows the animation** as described under [Input region](#input-region).
+
+Motion tokens (durations, easings, spring bounce) are a design-system concern, not part of this request.
+
+## Use case: screen frame
+
+A frame around the screen edge needs one painter and up to four reservers. Corner zones are not required. The protocol gives a positive exclusive zone only to a surface anchored to one edge, or one edge plus both perpendicular edges, and treats other anchor sets as 0 ([protocol](https://wayland.app/protocols/wlr-layer-shell-unstable-v1)).
+
+| Surface | Anchor | Size | Layer | Exclusive zone | Input region | Draws |
+|---|---|---|---|---|---|---|
+| Painter | top, bottom, left, right | `(0, 0)` | `top` | `-1` | `"auto"` (the ring only) | The ring, rounded screen corners, concave inner corners (path nodes) |
+| Bar (reserver) | top, left, right | `(0, N)` | `top` | `N` | `"auto"` | The bar |
+| Side and bottom reservers | one edge plus both perpendicular edges | 1 px on the short axis | `bottom` | `N` | `[]` | Nothing (transparent) |
+
+- The painter extends to every edge and ignores other zones (`-1`). The reservers push maximised windows inside the frame.
+- Rounded screen corners and concave inner corners are filled paths in the painter. They need no extra surfaces and no new tre shape features.
+- Eight surfaces (four edges, four corners) are rejected: more surfaces, and seams between neighbours at fractional scales. #needs-verification.
+- `exclusive_edge` stays in the request for corner-anchored surfaces that reserve one edge, such as a corner clock. The frame does not need it.
+- #needs-verification on KWin 6.7: that a full-screen `-1` surface does not disturb the reservers' zones; that a 1 px reserver with an empty input region maps and keeps its zone; and that damage tracking keeps the mostly-transparent painter cheap at idle.
+
+> [!question] Shape gaps for a later request
+> Concave `corner_radius`, `clip_path`, masks, blend modes and box hit-testing that follows rounded corners are not in the tre docs reviewed. The frame works without them because paths cover the geometry. They matter for clipping a subtree to a non-rectangular shape or cutting a hole with a blend mode. Candidate: `TRE-REQ-003`, after a frame prototype shows what is missing. `TRE-REQ-002` stays reserved for ADR-0001 Option B.
+
 ## Required behaviour (non-API)
 
 | Area | Requirement |
@@ -158,7 +249,7 @@ This part is separable. If the layer surface lands first, ship popups as a secon
 | Render | Same pipeline as `Window`: damage tracking, persistent target, no per-frame Python. Idle surfaces draw no frames. |
 | Scale | Fractional scale and mixed-DPI outputs. Surface scale follows the output it is on. #needs-verification: `wp_fractional_scale_v1` and `wp_viewporter` on KWin. |
 | Input | Pointer, touch, keyboard with key repeat and XKB layout, text input, scroll axes, cursor shape. Input matches `Window` as seen by `engine-core`. |
-| Input region | An empty or partial input region so a transparent OSD does not capture clicks. Extends the existing `click_through` key. |
+| Input region | `input_region` as specified above, so a transparent OSD or frame does not capture clicks. |
 | Clipboard | `read_clipboard` / `write_clipboard` work from a layer surface that has keyboard focus. |
 | Accessibility | The AccessKit tree is exposed for layer surfaces. #needs-verification: whether the current AccessKit adapter requires a `winit` window. |
 | Transparency | `transparent` works so rounded or floating bars render without a background rectangle. |
@@ -201,7 +292,15 @@ Recommendation: investigate I2 first; if the connection cannot be shared, take I
 - [ ] A `(0, 32)` size without both left and right anchors raises a Python error naming `size` before any protocol request is sent.
 - [ ] A surface bound to output `DP-1` stays on `DP-1`. Unplugging it fires `closed` with reason `"output_removed"`, and the app continues without crashing.
 - [ ] `app.outputs()` lists every connected output with a stable `name`; hot-plug fires `output_added` and `output_removed`.
-- [ ] A transparent `LayerWindow` with an empty input region passes pointer clicks through to the window below.
+- [ ] A transparent `LayerWindow` with `input_region=[]` passes pointer clicks through to the window below.
+- [ ] With `input_region="auto"` and a circular node, a click inside the circle reaches tre and a click in the bounding-box corner outside it reaches the window below.
+- [ ] Screen frame: a painter plus reservers (see [Use case: screen frame](#use-case-screen-frame)) keeps maximised windows inside the inner edge; a click on the ring reaches the shell and a click in the interior reaches the window below.
+- [ ] `window_region="drag"` on a `LayerWindow` node raises when attached. `"drag_margin"` moves a corner-anchored widget, never past the output edge, and fires `moved` with the final margin on release.
+- [ ] `layer_window.animate("margin_top", to=-32, duration_ms=200)` runs with no Python callback until `on_complete`, commits once per frame, and `advance(200)` completes it with no compositor.
+- [ ] Two `LayerWindow`s animating on the same loop turn read the same timestamp.
+- [ ] With frame callbacks stopped for a surface, its animation still fires `animation_end` with `finished=True` after the duration.
+- [ ] A fade-out close (cancel `close_requested`, animate `opacity` to 0, `close()` on `animation_end`) keeps the surface mapped until the animation ends.
+- [ ] With `reduced_motion` true, `LayerWindow.get("reduced_motion")` reports it and fires the `reduced_motion` event on change.
 - [ ] A `keyboard="on_demand"` surface receives key events when focused; a `"none"` surface never does.
 - [ ] A `PopupWindow` opens next to its `anchor_rect`, flips at a screen edge, and fires `closed` with reason `"dismissed"` on outside click and Escape.
 - [ ] A bar on a 1.0 scale output and a bar on a 1.5 scale output both render crisp text.
@@ -218,6 +317,11 @@ Recommendation: investigate I2 first; if the connection cannot be shared, take I
 - [ ] Check whether `window.set(x=, y=, always_on_top=, skip_taskbar=)` does anything on Wayland; it decides how useful the Option C prototype is.
 - [ ] Decide keyboard focus for popups under a `"none"` parent.
 - [ ] Define "layer" in the Glossary in both senses (tre in-window overlay, protocol stacking layer) and decide whether `LayerWindow` should rename its `layer=` parameter.
+- [ ] Decide whether `LayerWindow.animate` covers only margins or also size and `exclusive_zone` (the request recommends margins only).
+- [ ] Check KWin for negative margins, frame-callback behaviour on layer surfaces, and its own map and unmap effects.
+- [ ] Find where tre reads `reduced_motion` on Plasma and whether it follows Plasma's animation speed.
+- [ ] Prototype the screen frame and the full-screen overlay popup alternative, then decide on `TRE-REQ-003` (shape gaps) and on `PopupWindow`.
+- [ ] Confirm that tre's loop is clock-driven and that `on_complete` fires when frames stop.
 - [ ] Find the first KWin release exposing `zwlr_layer_shell_v1` (shared with ADR-0001).
 - [ ] Decide whether v1 targets wlroots-family compositors as well as KWin, which affects which compositors the acceptance tests cover.
 
