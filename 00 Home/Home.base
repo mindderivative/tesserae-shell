@@ -1,0 +1,75 @@
+filters:
+  and:
+    - 'file.ext == "md"'
+    - 'file.hasProperty("type")'
+    - 'file.name != "Home"'
+
+properties:
+  note.type:
+    displayName: Type
+  note.status:
+    displayName: Status
+  note.updated:
+    displayName: Updated
+  file.folder:
+    displayName: Folder
+
+views:
+  - type: table
+    name: Decisions
+    filters:
+      and:
+        - 'note.type == "adr"'
+    order:
+      - file.name
+      - note.status
+      - note.updated
+    sort:
+      - property: file.name
+        direction: ASC
+
+  - type: table
+    name: Needs verification
+    filters:
+      and:
+        - 'file.hasTag("needs-verification")'
+    order:
+      - file.name
+      - note.type
+      - note.status
+      - note.updated
+    sort:
+      - property: note.updated
+        direction: DESC
+
+  - type: table
+    name: Recently updated
+    limit: 8
+    order:
+      - file.name
+      - note.type
+      - note.status
+      - file.mtime
+    sort:
+      - property: file.mtime
+        direction: DESC
+
+  - type: table
+    name: By status
+    order:
+      - file.name
+      - note.type
+      - file.folder
+    groupBy:
+      property: note.status
+      direction: ASC
+
+  - type: table
+    name: By folder
+    order:
+      - file.name
+      - note.type
+      - note.status
+    groupBy:
+      property: file.folder
+      direction: ASC
