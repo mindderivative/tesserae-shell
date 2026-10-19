@@ -4,3 +4,7 @@
 
 # Copilot chat logs and plugin data
 copilot/
+
+# Agent instructions (local only)
+AGENTS.md
+CLAUDE.md
