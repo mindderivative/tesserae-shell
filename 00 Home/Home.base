@@ -1,9 +1,8 @@
 filters:
   and:
-    - 'file.ext == "md"'
-    - 'file.hasProperty("type")'
-    - 'file.name != "Home"'
-
+    - file.ext == "md"
+    - file.hasProperty("type")
+    - file.name != "Home"
 properties:
   note.type:
     displayName: Type
@@ -13,63 +12,58 @@ properties:
     displayName: Updated
   file.folder:
     displayName: Folder
-
 views:
   - type: table
     name: Decisions
     filters:
       and:
-        - 'note.type == "adr"'
+        - note.type == "adr"
     order:
       - file.name
-      - note.status
-      - note.updated
+      - status
+      - updated
     sort:
       - property: file.name
         direction: ASC
-
   - type: table
     name: Needs verification
     filters:
       and:
-        - 'file.hasTag("needs-verification")'
+        - file.hasTag("needs-verification")
     order:
       - file.name
-      - note.type
-      - note.status
-      - note.updated
+      - type
+      - status
+      - updated
     sort:
-      - property: note.updated
+      - property: updated
         direction: DESC
-
   - type: table
     name: Recently updated
-    limit: 8
     order:
       - file.name
-      - note.type
-      - note.status
+      - type
+      - status
       - file.mtime
     sort:
       - property: file.mtime
         direction: DESC
-
+    limit: 8
   - type: table
     name: By status
+    groupBy:
+      property: status
+      direction: ASC
     order:
       - file.name
-      - note.type
+      - type
       - file.folder
-    groupBy:
-      property: note.status
-      direction: ASC
-
   - type: table
     name: By folder
-    order:
-      - file.name
-      - note.type
-      - note.status
     groupBy:
       property: file.folder
       direction: ASC
+    order:
+      - file.name
+      - type
+      - status

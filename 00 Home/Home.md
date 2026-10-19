@@ -26,7 +26,7 @@ depends_on: []
 | Research | [[Prior Art - Linux Shell Surfaces]] |
 | Design areas | [[10 Vision]] · [[20 Architecture]] · [[40 Specifications]] · [[41 YAML Reference]] · [[42 Python API]] · [[50 Design System]] · [[60 Quality]] · [[70 Delivery]] · [[80 Engine Requests]] |
 
-## Current focus
+## Current
 
 ![[Index#Current focus]]
 
