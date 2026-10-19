@@ -46,7 +46,7 @@ Operating rules for agents: [[AGENTS]].
 | `90 Research` | [[90 Research]] | Prior art, protocol notes, spikes |
 
 > [!warning] Folder indexes pending
-> Only `00 Home`, `30 Decisions` and `90 Research` have content so far. The other folder index notes do not exist yet, so their links are unresolved. Create each when its folder gets its first note.
+> Only `00 Home`, `30 Decisions`, `80 Engine Requests` and `90 Research` have content so far. Only [[80 Engine Requests]] has its folder index; the others do not exist yet, so their links are unresolved. Create each when its folder gets its first note.
 
 ## Decisions
 
@@ -55,6 +55,8 @@ Operating rules for agents: [[AGENTS]].
 | [[ADR-0001 Shell Surface Strategy]] | proposed | All surface specs |
 
 Research: [[Prior Art - Linux Shell Surfaces]]
+
+Engine requests: [[TRE-REQ-001 Layer Surface Window]] (draft, blocks all surface specs)
 
 Planned, not yet written:
 - Relationship to Tesserae UI: depend on `tesserae-ui` or build directly on `tre`
@@ -72,6 +74,6 @@ Versions drift. If the live docs disagree with this table, the docs win; update 
 
 ## Current focus
 
-1. Resolve [[ADR-0001 Shell Surface Strategy]]: layer surfaces are the first blocker.
+1. Review [[TRE-REQ-001 Layer Surface Window]] and accept or amend [[ADR-0001 Shell Surface Strategy]]: layer surfaces are the first blocker.
 2. Write `10 Vision` (goals, non-goals, v1 scope) so the architecture notes have a target.
 3. Seed [[Open Questions]] from the known gaps in [[AGENTS]] §4.
