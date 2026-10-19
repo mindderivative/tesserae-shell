@@ -1,0 +1,6 @@
+# Hidden files and folders (.obsidian, .copilot, .claude, ...), except this file
+.*
+!.gitignore
+
+# Copilot chat logs and plugin data
+copilot/
